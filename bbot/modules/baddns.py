@@ -15,11 +15,84 @@ class baddns(BaseModule):
         "created_date": "2024-01-18",
         "author": "@liquidsec",
     }
-    options = {"custom_nameservers": [], "only_high_confidence": False, "enabled_submodules": []}
+    options = {
+        "custom_nameservers": [],
+        "only_high_confidence": False,
+        "enabled_submodules": [],
+        "filter_non_vulnerable": True,
+    }
     options_desc = {
         "custom_nameservers": "Force BadDNS to use a list of custom nameservers",
         "only_high_confidence": "Do not emit low-confidence or generic detections",
         "enabled_submodules": "A list of submodules to enable. Empty list (default) enables CNAME, TXT and MX Only",
+        "filter_non_vulnerable": "Filter out known non-vulnerable/parking services to reduce false positives",
+    }
+
+    # Services known to NOT be vulnerable to subdomain takeover
+    # Based on research from https://github.com/EdOverflow/can-i-take-over-xyz
+    NON_VULNERABLE_SERVICES = {
+        # Service name patterns (case-insensitive)
+        "signatures": [
+            "AWS_ELB",  # AWS Elastic Load Balancer
+            "AWS_ELB_TAKEOVER",
+            "CLOUDFRONT",  # AWS CloudFront
+            "CLOUDFRONT_TAKEOVER",
+            "ACQUIA",
+            "AKAMAI",
+            "DESK",
+            "DREAMHOST",
+            "FASTLY",
+            "FEEDPRESS",
+            "FIREBASE",
+            "FLY_IO",
+            "FLYIO",
+            "FRESHDESK",
+            "FRESHSERVICE",
+            "GOOGLE_CLOUD_STORAGE",
+            "GCS",
+            "GOOGLE_SITES",
+            "KINSTA",
+            "MAILCHIMP",
+            "SENDGRID",
+            "SQUARESPACE",
+            "STATUSPAGE",
+            "UNBOUNCE",
+            "USERVOICE",
+            "WPENGINE",
+            "WP_ENGINE",
+            "ZENDESK",
+        ],
+        # CNAME target domain patterns (case-insensitive substring match)
+        "cname_patterns": [
+            "elb.amazonaws.com",
+            "cloudfront.net",
+            "fastly.net",
+            "fastlylb.net",
+            "firebase.com",
+            "firebaseapp.com",
+            "fly.io",
+            "fly.dev",
+            "freshdesk.com",
+            "freshservice.com",
+            "kinsta.com",
+            "kinsta.cloud",
+            "mailchimp.com",
+            "sendgrid.net",
+            "squarespace.com",
+            "statuspage.io",
+            "unbounce.com",
+            "uservoice.com",
+            "wpengine.com",
+            "zendesk.com",
+        ],
+        # Fingerprint patterns that indicate parking/non-vulnerable services
+        "fingerprint_keywords": [
+            "ViewerCertificateException",
+            "Fastly error: unknown domain",
+            "No Site For Domain",
+            "DNS verification",
+            "domain verification required",
+        ],
     }
     module_threads = 8
     deps_pip = ["baddns~=1.10.185"]
@@ -42,6 +115,7 @@ class baddns(BaseModule):
         if self.custom_nameservers:
             self.custom_nameservers = self.helpers.chain_lists(self.custom_nameservers)
         self.only_high_confidence = self.config.get("only_high_confidence", False)
+        self.filter_non_vulnerable = self.config.get("filter_non_vulnerable", True)
         self.signatures = load_signatures()
         self.set_modules()
         all_submodules_list = [m.name for m in get_all_modules()]
@@ -52,7 +126,46 @@ class baddns(BaseModule):
                 )
                 return False
         self.debug(f"Enabled BadDNS Submodules: [{','.join(self.enabled_submodules)}]")
+        if self.filter_non_vulnerable:
+            self.info(
+                f"Filtering enabled for {len(self.NON_VULNERABLE_SERVICES['signatures'])} known non-vulnerable services"
+            )
         return True
+
+    def is_non_vulnerable(self, result_dict):
+        """
+        Check if a baddns result matches known non-vulnerable services.
+
+        Args:
+            result_dict: Dictionary with keys like 'signature', 'indicator', 'trigger'
+
+        Returns:
+            tuple: (is_filtered, reason) where is_filtered is bool and reason is str
+        """
+        if not self.filter_non_vulnerable:
+            return False, None
+
+        signature = result_dict.get("signature", "").upper()
+        indicator = str(result_dict.get("indicator", "")).lower()
+        trigger = str(result_dict.get("trigger", "")).lower()
+        description = str(result_dict.get("description", "")).lower()
+
+        # Check signature name against known non-vulnerable services
+        for non_vuln_sig in self.NON_VULNERABLE_SERVICES["signatures"]:
+            if non_vuln_sig.upper() in signature:
+                return True, f"Signature '{signature}' matches non-vulnerable service '{non_vuln_sig}'"
+
+        # Check CNAME/indicator against known non-vulnerable domain patterns
+        for pattern in self.NON_VULNERABLE_SERVICES["cname_patterns"]:
+            if pattern.lower() in indicator or pattern.lower() in trigger:
+                return True, f"CNAME pattern '{pattern}' detected in indicator/trigger"
+
+        # Check for fingerprint keywords indicating parking services
+        for keyword in self.NON_VULNERABLE_SERVICES["fingerprint_keywords"]:
+            if keyword.lower() in description or keyword.lower() in trigger:
+                return True, f"Parking service keyword '{keyword}' detected"
+
+        return False, None
 
     async def handle_event(self, event):
         tasks = []
@@ -86,6 +199,15 @@ class baddns(BaseModule):
                 if results and len(results) > 0:
                     for r in results:
                         r_dict = r.to_dict()
+
+                        # Check if this result matches a known non-vulnerable service
+                        is_filtered, filter_reason = self.is_non_vulnerable(r_dict)
+                        if is_filtered:
+                            self.debug(
+                                f"Filtered non-vulnerable result for {event.host}: {filter_reason}. "
+                                f"Signature: {r_dict.get('signature')}, Indicator: {r_dict.get('indicator')}"
+                            )
+                            continue
 
                         confidence = r_dict["confidence"]
 

@@ -276,3 +276,30 @@ omit_event_types:
 interactsh_server: null
 interactsh_token: null
 interactsh_disable: false
+
+### OUTPUT MODULE CONFIGURATIONS ###
+
+# Module-specific configurations
+# These are the default values for module options
+# Override these in ~/.config/bbot/bbot.yml or via CLI with -c modules.MODULE_NAME.option=value
+
+modules:
+  # Google Drive output module
+  google_drive:
+    credentials_file: ""  # Path to Google OAuth2 credentials JSON
+    folder_id: ""  # Google Drive folder ID (optional, creates "BBOT Scans" folder if not specified)
+    share_with: []  # List of email addresses to share files with
+    make_public: false  # Generate public shareable links
+    upload_csv: true  # Upload CSV results file
+    upload_methodology: true  # Upload methodology markdown files
+
+  # Recon Methodology generator module
+  recon_methodology:
+    template_repo_url: ""  # Git URL for template repository (leave empty to skip)
+    template_repo_branch: "main"  # Branch to use
+    template_cache_dir: ""  # Local cache directory (default: ~/.bbot/templates)
+    output_dir: ""  # Output directory for markdown files (default: scan_dir/methodology)
+    upload_to_drive: false  # Upload methodology files to Google Drive
+    group_by: "host"  # Group checklists by 'host' or 'technology'
+    include_technologies: []  # Whitelist of technologies (empty = all)
+    exclude_technologies: []  # Blacklist of technologies to skip

@@ -65,3 +65,49 @@ class TestBaddns_cname_signature(BaseTestBaddns):
             "Failed to emit VULNERABILITY"
         )
         assert any("baddns-cname" in e.tags for e in events), "Failed to add baddns tag"
+
+
+class TestBaddns_filter_non_vulnerable(BaseTestBaddns):
+    """Test that non-vulnerable services are filtered out by default"""
+
+    async def setup_after_prep(self, module_test):
+        from bbot.modules import baddns as baddns_module
+        from baddns.lib.whoismanager import WhoisManager
+
+        # Mock a CNAME pointing to AWS ELB (known non-vulnerable)
+        await module_test.mock_dns(
+            {"bad.dns": {"CNAME": ["my-app.elb.amazonaws.com."]}, "_NXDOMAIN": ["my-app.elb.amazonaws.com"]}
+        )
+        module_test.monkeypatch.setattr(baddns_module.baddns, "select_modules", self.select_modules)
+        module_test.monkeypatch.setattr(WhoisManager, "dispatchWHOIS", self.dispatchWHOIS)
+
+    def check(self, module_test, events):
+        # Should NOT emit VULNERABILITY because AWS ELB is in the non-vulnerable list
+        vulnerability_events = [e for e in events if e.type == "VULNERABILITY"]
+        assert len(vulnerability_events) == 0, (
+            "Should filter out non-vulnerable AWS ELB, but found VULNERABILITY event"
+        )
+
+
+class TestBaddns_filter_disabled(BaseTestBaddns):
+    """Test that filtering can be disabled via config"""
+
+    config_overrides = {"dns": {"minimal": False}, "modules": {"baddns": {"filter_non_vulnerable": False}}}
+
+    async def setup_after_prep(self, module_test):
+        from bbot.modules import baddns as baddns_module
+        from baddns.lib.whoismanager import WhoisManager
+
+        # Mock a CNAME pointing to AWS ELB (known non-vulnerable)
+        await module_test.mock_dns(
+            {"bad.dns": {"CNAME": ["my-app.elb.amazonaws.com."]}, "_NXDOMAIN": ["my-app.elb.amazonaws.com"]}
+        )
+        module_test.monkeypatch.setattr(baddns_module.baddns, "select_modules", self.select_modules)
+        module_test.monkeypatch.setattr(WhoisManager, "dispatchWHOIS", self.dispatchWHOIS)
+
+    def check(self, module_test, events):
+        # With filtering disabled, should still emit the finding
+        # Note: This test verifies that the filter_non_vulnerable config option works
+        assert any(e.data == "my-app.elb.amazonaws.com" for e in events), "CNAME detection failed"
+        # The baddns library may or may not classify this as VULNERABILITY, but it should at least emit something
+        assert any(e.type in ["VULNERABILITY", "FINDING"] for e in events), "Should emit event when filtering disabled"
